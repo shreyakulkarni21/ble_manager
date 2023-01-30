@@ -2,7 +2,6 @@ import React, {useState, useEffect} from 'react';
 import {
   Text,
   View,
-  FlatList,
   Platform,
   StatusBar,
   ScrollView,
@@ -12,152 +11,39 @@ import {
   NativeModules,
   useColorScheme,
   TouchableOpacity,
-  PermissionsAndroid,
   NativeEventEmitter,
+  PermissionsAndroid,
 } from 'react-native';
+import BleManager from 'react-native-ble-manager';
 import {Colors} from 'react-native/Libraries/NewAppScreen';
 
-import BleManager from './BleManager';
 const BleManagerModule = NativeModules.BleManager;
-const bleManagerEmitter = new NativeEventEmitter(BleManagerModule);
+const BleManagerEmitter = new NativeEventEmitter(BleManagerModule);
 
 const App = () => {
-  const isDarkMode = useColorScheme() === 'dark';
-
-  const backgroundStyle = {
-    backgroundColor: isDarkMode ? Colors.darker : Colors.lighter,
-  };
-
-  // bluetooth integration starts here
-  const [isScanning, setIsScanning] = useState(false);
   const peripherals = new Map();
-  const [list, setList] = useState([]);
-
-  const startScan = () => {
-    if (!isScanning) {
-      BleManager.scan([], 3, true)
-        .then(results => {
-          console.log('Scanning...');
-          setIsScanning(true);
-        })
-        .catch(err => {
-          console.error(err);
-        });
-    }
-  };
-
-  if (list.length > 0) {
-    console.log(list);
-  }
-
-  const handleStopScan = () => {
-    console.log('Scan is stopped');
-    setIsScanning(false);
-  };
-
-  const handleDisconnectedPeripheral = data => {
-    let peripheral = peripherals.get(data.peripheral);
-    if (peripheral) {
-      peripheral.connected = false;
-      peripherals.set(peripheral.id, peripheral);
-      setList(Array.from(peripherals.values()));
-    }
-    console.log('Disconnected from ' + data.peripheral);
-  };
-
-  const handleUpdateValueForCharacteristic = data => {
-    console.log(
-      'Received data from ' +
-        data.peripheral +
-        ' characteristic ' +
-        data.characteristic,
-      data.value,
-    );
-  };
-
-  const retrieveConnected = () => {
-    BleManager.getConnectedPeripherals([]).then(results => {
-      if (results.length == 0) {
-        console.log('No connected peripherals');
-      }
-      console.log(results);
-      for (var i = 0; i < results.length; i++) {
-        var peripheral = results[i];
-        peripheral.connected = true;
-        peripherals.set(peripheral.id, peripheral);
-        setList(Array.from(peripherals.values()));
-      }
-    });
-  };
-
-  const handleDiscoverPeripheral = peripheral => {
-    console.log('Got ble peripheral', peripheral);
-    if (!peripheral.name) {
-      peripheral.name = 'NO NAME';
-    }
-    peripherals.set(peripheral.id, peripheral);
-    setList(Array.from(peripherals.values()));
-  };
-
-  const testPeripheral = peripheral => {
-    if (peripheral) {
-      if (peripheral.connected) {
-        BleManager.disconnect(peripheral.id);
-      } else {
-        BleManager.connect(peripheral.id)
-          .then(() => {
-            let p = peripherals.get(peripheral.id);
-            if (p) {
-              p.connected = true;
-              peripherals.set(peripheral.id, p);
-              setList(Array.from(peripherals.values()));
-            }
-            console.log('Connected to ' + peripheral.id);
-
-            setTimeout(() => {
-              /* Test read current RSSI value */
-              BleManager.retrieveServices(peripheral.id).then(
-                peripheralData => {
-                  console.log('Retrieved peripheral services', peripheralData);
-
-                  BleManager.readRSSI(peripheral.id).then(rssi => {
-                    console.log('Retrieved actual RSSI value', rssi);
-                    let p = peripherals.get(peripheral.id);
-                    if (p) {
-                      p.rssi = rssi;
-                      peripherals.set(peripheral.id, p);
-                      setList(Array.from(peripherals.values()));
-                    }
-                  });
-                },
-              );
-            }, 900);
-          })
-          .catch(error => {
-            console.log('Connection error', error);
-          });
-      }
-    }
-  };
+  const [isScanning, setIsScanning] = useState(false);
+  const [connected, setConnected] = useState(false);
+  const [bluetoothDevices, setBluetoothDevices] = useState([]);
 
   useEffect(() => {
-    BleManager.start({showAlert: false}).then(() => {
-      // Success code
-      console.log('Module initialized');
+    // turn on bluetooth if it is not on
+    BleManager.enableBluetooth().then(() => {
+      console.log('Bluetooth is turned on!');
     });
 
-    bleManagerEmitter.addListener(
-      'BleManagerDiscoverPeripheral',
-      handleDiscoverPeripheral,
-    );
-    bleManagerEmitter.addListener('BleManagerStopScan', handleStopScan);
-    bleManagerEmitter.addListener(
-      'BleManagerDisconnectPeripheral',
-      handleDisconnectedPeripheral,
-    );
-    bleManagerEmitter.addListener(
-      'BleManagerDidUpdateValueForCharacteristic',
-      handleUpdateValueForCharacteristic,
+    // start bluetooth manager
+    BleManager.start({showAlert: false}).then(() => {
+      console.log('BLE Manager initialized');
+    });
+
+    let stopListener = BleManagerEmitter.addListener(
+      'BleManagerStopScan',
+      () => {
+        setIsScanning(false);
+        console.log('Scan is stopped');
+        handleGetConnectedDevices();
+      },
     );
 
     if (Platform.OS === 'android' && Platform.Version >= 23) {
@@ -181,58 +67,140 @@ const App = () => {
     }
 
     return () => {
-      console.log('unmount');
-      // bleManagerEmitter.removeListener(
-      //   'BleManagerDiscoverPeripheral',
-      //   handleDiscoverPeripheral,
-      // );
-      // bleManagerEmitter.removeListener('BleManagerStopScan', handleStopScan);
-      // bleManagerEmitter.removeListener(
-      //   'BleManagerDisconnectPeripheral',
-      //   handleDisconnectedPeripheral,
-      // );
-      // bleManagerEmitter.removeListener(
-      //   'BleManagerDidUpdateValueForCharacteristic',
-      //   handleUpdateValueForCharacteristic,
-      // );
+      stopListener.remove();
     };
   }, []);
 
-  const renderItem = item => {
-    const color = item.connected ? 'green' : '#fff';
+  const startScan = () => {
+    if (!isScanning) {
+      BleManager.scan([], 5, true)
+        .then(() => {
+          setIsScanning(true);
+        })
+        .catch(error => {
+          console.error(error);
+        });
+    }
+  };
+
+  const handleGetConnectedDevices = () => {
+    BleManager.getConnectedPeripherals([]).then(results => {
+      if (results.length == 0) {
+        console.log('No connected bluetooth devices');
+      } else {
+        for (let i = 0; i < results.length; i++) {
+          let peripheral = results[i];
+          peripheral.connected = true;
+          peripherals.set(peripheral.id, peripheral);
+          setConnected(true);
+          setBluetoothDevices(Array.from(peripherals.values()));
+        }
+      }
+    });
+  };
+
+  const connectToPeripheral = peripheral => {
+    if (peripheral.connected) {
+      BleManager.disconnect(peripheral.id).then(() => {
+        peripheral.connected = false;
+        setConnected(false);
+        alert(`Disconnected from ${peripheral.name}`);
+      });
+    } else {
+      BleManager.connect(peripheral.id)
+        .then(() => {
+          let peripheralResponse = peripherals.get(peripheral.id);
+          if (peripheralResponse) {
+            peripheralResponse.connected = true;
+            peripherals.set(peripheral.id, peripheralResponse);
+            setConnected(true);
+            setBluetoothDevices(Array.from(peripherals.values()));
+          }
+
+          BleManager.createBond(peripheral.id)
+            .then(() => {
+              console.log('Bluetooth device paired successfully!');
+              alert('Connected to ' + peripheral.name);
+            })
+            .catch(() => {
+              console.log('failed to pair');
+            });
+        })
+        .catch(error => console.log(error));
+
+      /* Read current RSSI value */
+      setTimeout(() => {
+        BleManager.retrieveServices(peripheral.id).then(peripheralData => {
+          console.log('Peripheral services:', peripheralData);
+        });
+      }, 900);
+    }
+  };
+
+  const isDarkMode = useColorScheme() === 'dark';
+  const backgroundStyle = {
+    backgroundColor: isDarkMode ? Colors.darker : Colors.lighter,
+  };
+
+  // render list of bluetooth devices
+  const RenderItem = ({peripheral}) => {
+    const color = peripheral.connected ? 'green' : '#fff';
+
     return (
-      <TouchableHighlight onPress={() => testPeripheral(item)}>
-        <View style={[styles.row, {backgroundColor: color}]}>
-          <Text
+      <>
+        <Text
+          style={{
+            fontSize: 20,
+            marginLeft: 10,
+            marginBottom: 5,
+            color: isDarkMode ? Colors.white : Colors.black,
+          }}>
+          Nearby Devices:
+        </Text>
+
+        <TouchableOpacity onPress={() => connectToPeripheral(peripheral)}>
+          <View
             style={{
-              fontSize: 12,
-              textAlign: 'center',
-              color: '#333333',
-              padding: 10,
+              backgroundColor: color,
+              borderRadius: 5,
+              paddingVertical: 5,
+              marginHorizontal: 10,
+              paddingHorizontal: 10,
             }}>
-            {item.name}
-          </Text>
-          <Text
-            style={{
-              fontSize: 10,
-              textAlign: 'center',
-              color: '#333333',
-              padding: 2,
-            }}>
-            RSSI: {item.rssi}
-          </Text>
-          <Text
-            style={{
-              fontSize: 8,
-              textAlign: 'center',
-              color: '#333333',
-              padding: 2,
-              paddingBottom: 20,
-            }}>
-            {item.id}
-          </Text>
-        </View>
-      </TouchableHighlight>
+            <Text
+              style={{
+                fontSize: 18,
+                textTransform: 'capitalize',
+                color: connected ? Colors.white : Colors.black,
+              }}>
+              {peripheral.name}
+            </Text>
+
+            <View
+              style={{
+                backgroundColor: color,
+                flexDirection: 'row',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+              }}>
+              <Text
+                style={{
+                  fontSize: 14,
+                  color: connected ? Colors.white : Colors.black,
+                }}>
+                RSSI: {peripheral.rssi}
+              </Text>
+              <Text
+                style={{
+                  fontSize: 14,
+                  color: connected ? Colors.white : Colors.black,
+                }}>
+                ID: {peripheral.id}
+              </Text>
+            </View>
+          </View>
+        </TouchableOpacity>
+      </>
     );
   };
 
@@ -242,85 +210,55 @@ const App = () => {
         barStyle={isDarkMode ? 'light-content' : 'dark-content'}
         backgroundColor={backgroundStyle.backgroundColor}
       />
-      <View
-        style={{
-          backgroundColor: isDarkMode ? Colors.darker : Colors.lighter,
-        }}>
-        <View style={{alignItems: 'center'}}>
-          <Text
-            style={{
-              fontSize: 30,
-              textAlign: 'center',
-              color: isDarkMode ? Colors.white : Colors.black,
-            }}>
-            React Native BLE Manager Tutorial
-          </Text>
+
+      <ScrollView
+        style={backgroundStyle}
+        contentContainerStyle={styles.mainBody}
+        contentInsetAdjustmentBehavior="automatic">
+        <View
+          style={{
+            backgroundColor: isDarkMode ? Colors.darker : Colors.lighter,
+            marginBottom: 40,
+          }}>
+          <View>
+            <Text
+              style={{
+                fontSize: 30,
+                textAlign: 'center',
+                color: isDarkMode ? Colors.white : Colors.black,
+              }}>
+              React Native BLE Manager Tutorial
+            </Text>
+          </View>
+
+          <TouchableOpacity
+            activeOpacity={0.5}
+            style={styles.buttonStyle}
+            onPress={startScan}>
+            <Text style={styles.buttonTextStyle}>
+              {isScanning ? 'Scanning...' : 'Scan Bluetooth Devices'}
+            </Text>
+          </TouchableOpacity>
         </View>
 
-        <TouchableOpacity
-          activeOpacity={0.5}
-          style={styles.buttonStyle}
-          onPress={() => startScan()}>
-          <Text style={styles.buttonTextStyle}>Scan Bluetooth Devices</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          activeOpacity={0.5}
-          style={styles.buttonStyle}
-          onPress={() => retrieveConnected()}>
-          <Text style={styles.buttonTextStyle}>
-            Retrieve connected peripherals
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* <ScrollView
-          contentInsetAdjustmentBehavior="automatic"
-          style={backgroundStyle}>
-        </ScrollView> */}
-      {list.length > 0 ? (
-        <FlatList
-          data={list}
-          renderItem={({item}) => renderItem(item)}
-          keyExtractor={item => item.id}
-        />
-      ) : null}
+        {/* list of scanned bluetooth devices */}
+        {bluetoothDevices.map(device => (
+          <View key={device.id}>
+            <RenderItem peripheral={device} />
+          </View>
+        ))}
+      </ScrollView>
     </SafeAreaView>
   );
 };
 
-const windowWidth = Dimensions.get('window').width;
 const windowHeight = Dimensions.get('window').height;
-
 const styles = StyleSheet.create({
   mainBody: {
     flex: 1,
     justifyContent: 'center',
-    // padding: 20,
     height: windowHeight,
   },
-  container: {
-    padding: 16,
-    flex: 1,
-  },
-  fileHeader: {
-    color: '#fff',
-    fontSize: 30,
-    marginBottom: 10,
-    borderColor: '#ccc',
-    paddingBottom: 10,
-    borderBottomWidth: 1,
-  },
-  list: {
-    marginVertical: 5,
-    paddingBottom: 12,
-    borderBottomWidth: 1,
-    borderColor: '#ccc',
-  },
-  listName: {
-    fontSize: 16,
-  },
-
   buttonStyle: {
     backgroundColor: '#307ecc',
     borderWidth: 0,
@@ -337,14 +275,6 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     paddingVertical: 10,
     fontSize: 16,
-  },
-  textStyle: {
-    backgroundColor: '#fff',
-    fontSize: 15,
-    marginTop: 16,
-    marginLeft: 35,
-    marginRight: 35,
-    textAlign: 'center',
   },
 });
 
