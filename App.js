@@ -72,8 +72,17 @@ const App = () => {
   }, []);
 
   const startScan = () => {
+   PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN
+      ).then(result => {
+        if (result) {
+          console.log('Got the bluetooth permission');
+        } else{
+            console.log('permission denied for bluetooth')     
+        }
+      });
+  //  console.log('value of granted is ', gtranted);
     if (!isScanning) {
-      BleManager.scan([], 5, true)
+      BleManager.scan([], 30, true)
         .then(() => {
           setIsScanning(true);
         })
@@ -227,7 +236,7 @@ const App = () => {
                 textAlign: 'center',
                 color: isDarkMode ? Colors.white : Colors.black,
               }}>
-              React Native BLE Manager Tutorial
+              Start heart rate monitoring
             </Text>
           </View>
 
